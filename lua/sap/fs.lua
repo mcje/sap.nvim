@@ -25,23 +25,22 @@ end
 
 --- Read directory contents
 ---@param path string Absolute directory path
----@param show_hidden boolean?
----@return FSEntry[]
-M.read_dir = function(path, show_hidden)
-    local entries = {}
-    local it = uv.fs_scandir(path)
-    if it then
-        while true do
-            local name, type = uv.fs_scandir_next(it)
-            if not name then
-                break
-            end
-            if show_hidden or not name:find("^%.") then
-                entries[#entries + 1] = { name = name, path = path .. "/" .. name, type = type }
-            end
-        end
+---@return FSEntry[]?
+---@return string? err
+M.read_dir = function(path)
+    local it, err = uv.fs_scandir(path)
+    if not it then
+        return nil, "could not read dir: " .. path
     end
-    return entries
+    local files = {}
+    while true do
+        local name, type = uv.fs_scandir_next(it)
+        if not name then
+            break
+        end
+        files[#files + 1] = { name = name, path = path .. "/" .. name, type = type }
+    end
+    return files
 end
 
 --- Create a file or directory

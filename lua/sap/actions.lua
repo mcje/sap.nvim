@@ -1,350 +1,303 @@
 local buffer = require("sap.buffer")
-local Tree = require("sap.tree")
+local parser = require("sap.parser")
+local render = require("sap.render")
 
 local M = {}
 
-local _get_context = function()
+local function get_context()
     local bufnr = vim.api.nvim_get_current_buf()
     local linenr = vim.api.nvim_win_get_cursor(0)[1]
-    local state = buffer.state[bufnr]
+    local state = buffer.get_state(bufnr)
     local entry = buffer.get_entry_at_line(bufnr, linenr)
     return bufnr, linenr, state, entry
 end
 
---- Adjust collapse_cache indentation for entries under a given path
----@param state SapState
----@param root_path string Path to check entries against
----@param delta integer Number of spaces to add (positive) or remove (negative)
-local function adjust_collapse_cache_indent(state, root_path, delta)
-    for id, lines in pairs(state.collapse_cache) do
-        local cache_entry = state.id_to_entry[id]
-        if cache_entry then
-            local is_under_root = cache_entry.node.path:sub(1, #root_path) == root_path
-            if is_under_root then
-                for i, line in ipairs(lines) do
-                    local prefix_end = line:find(":") or 0
-                    local before = line:sub(1, prefix_end)
-                    local after = line:sub(prefix_end + 1)
-                    if delta > 0 then
-                        lines[i] = before .. string.rep(" ", delta) .. after
-                    elseif delta < 0 then
-                        local spaces_to_remove = math.min(-delta, #(after:match("^%s*") or ""))
-                        lines[i] = before .. after:sub(spaces_to_remove + 1)
-                    end
-                end
-            end
+--- Open file or toggle directory
+function M.open()
+    local bufnr, linenr, state, entry = get_context()
+    if not entry or not state then
+        return
+    end
+
+    if entry.type == "directory" then
+        if state:is_expanded(entry) then
+            M.collapse()
+        else
+            M.expand()
         end
+    else
+        vim.cmd("edit " .. vim.fn.fnameescape(entry.path))
     end
 end
 
-local _collapse_dir = function(bufnr, linenr, state, entry)
-    if not entry then
+--- Go to parent directory (in place)
+function M.parent()
+    local bufnr, _, state, _ = get_context()
+    if not state then
         return
     end
-    if not entry.node.expanded then
-        return -- already collapsed
-    end
-    if entry.node.stat.type ~= "directory" then
-        -- TODO: maybe collapse_parent?
-        return -- not a dir
-    end
-    entry.node.expanded = false
 
+    local old_root = state.root_path
+
+    local ok, err = state:go_to_parent()
+    if not ok then
+        vim.notify("sap: " .. (err or "cannot go to parent"), vim.log.levels.WARN)
+        return
+    end
+
+    local indent_size = require("sap.config").options.indent_size or 4
+    local indent_str = string.rep(" ", indent_size)
+
+    -- Indent all existing lines (they're now one level deeper)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    local dir_line = lines[linenr]
+    for i, line in ipairs(lines) do
+        local prefix_end = line:find(":") or 0
+        local before = line:sub(1, prefix_end)
+        local after = line:sub(prefix_end + 1)
+        lines[i] = before .. indent_str .. after
+    end
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
-    local id, dir_indent, _, _ = buffer.parse_line(dir_line)
-    local delete_start = linenr -- 0 index
-    local delete_end = linenr
-    for i = linenr + 1, #lines do
-        local _, child_indent, _, _ = buffer.parse_line(lines[i])
-        if child_indent <= dir_indent then
+    -- Get new root entry
+    local new_root_entry = state:get_by_path(state.root_path)
+
+    -- Get siblings from state (excludes pending deletes, applies pending moves)
+    local siblings = {}
+    for _, s in ipairs(state:get_children(state.root_path)) do
+        if s.path ~= old_root then
+            siblings[#siblings + 1] = s
+        end
+    end
+
+    -- Build lines to insert at top: new root + siblings
+    local new_lines = {}
+
+    -- New root line (depth 0)
+    if new_root_entry then
+        local suffix = new_root_entry.type == "directory" and "/" or ""
+        local prefix = string.format("///%d:", new_root_entry.id)
+        new_lines[#new_lines + 1] = prefix .. new_root_entry.name .. suffix
+    end
+
+    -- Sibling lines (depth 1)
+    for _, sibling in ipairs(siblings) do
+        local suffix = sibling.type == "directory" and "/" or ""
+        local prefix = sibling.id and string.format("///%d:", sibling.id) or ""
+        new_lines[#new_lines + 1] = prefix .. indent_str .. sibling.name .. suffix
+    end
+
+    -- Insert at top
+    vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, new_lines)
+
+    -- Sync to detect any changes from the buffer manipulation
+    buffer.sync(bufnr)
+end
+
+--- Set current entry as root (in place)
+function M.set_root()
+    local bufnr, linenr, state, entry = get_context()
+    if not entry or not state then
+        return
+    end
+
+    if entry.type ~= "directory" then
+        vim.notify("sap: not a directory", vim.log.levels.WARN)
+        return
+    end
+
+    -- Parse buffer to find line ranges
+    local parsed = parser.parse_buffer(bufnr, state.root_path)
+
+    -- Find the line number of the new root
+    local new_root_linenr = nil
+    for _, p in ipairs(parsed) do
+        if p.path == entry.path then
+            new_root_linenr = p.linenr
             break
         end
-        delete_end = i
     end
 
-    local removed_lines = vim.api.nvim_buf_get_lines(bufnr, linenr, delete_end, false)
-    state.collapse_cache[id] = removed_lines
+    state:set_root(entry)
 
-    if delete_end > linenr then
-        vim.api.nvim_buf_set_lines(bufnr, linenr, delete_end, false, {})
-    end
-
-    buffer.refresh_extmarks(bufnr, linenr - 1, -1)
-end
-
-M.collapse_dir = function()
-    local bufnr, linenr, state, entry = _get_context()
-    _collapse_dir(bufnr, linenr, state, entry)
-end
-
-local _expand_dir = function(bufnr, linenr, state, entry)
-    if not entry then
+    if not new_root_linenr then
         return
     end
-    if entry.node.expanded then
-        return -- already expanded
-    end
-    if entry.node.stat.type ~= "directory" then
-        return -- not a dir
-    end
-    entry.node.expanded = true
 
+    -- Get indent of new root to calculate shift
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    local dir_line = lines[linenr]
-    local id, dir_indent, _, _ = buffer.parse_line(dir_line)
+    local _, new_root_indent = parser.parse_line(lines[new_root_linenr])
 
-    local cached_lines = state.collapse_cache[id]
-    if cached_lines then
-        vim.api.nvim_buf_set_lines(bufnr, linenr, linenr, false, cached_lines)
-        state.collapse_cache[id] = nil
-        buffer.refresh_extmarks(bufnr, linenr - 1, linenr + #cached_lines)
-    else
-        local ok, err = entry.node:sync()
-        if not ok then
-            vim.notify("sap: couldnt expand " .. entry.node.name .. ": " .. err)
-            return
-        end
-        local child_lines = {}
-        local child_paths = vim.tbl_keys(entry.node.children)
-        entry.node.sort(child_paths)
-        for _, c_path in ipairs(child_paths) do
-            local child = entry.node.children[c_path]
-            local c_id = buffer.get_or_create_id(bufnr, c_path)
-            state.id_to_entry[c_id] = { node = child, depth = entry.depth + 1 }
-
-            local c_indent = string.rep(" ", dir_indent + 4)
-            local c_name = child.name
-            local c_suffix = child.stat.type == "directory" and "/" or ""
-            child_lines[#child_lines + 1] = string.format("///%d:%s%s%s", c_id, c_indent, c_name, c_suffix)
-        end
-        vim.api.nvim_buf_set_lines(bufnr, linenr, linenr, false, child_lines)
-        buffer.refresh_extmarks(bufnr, linenr - 1, linenr + #child_lines)
+    -- Delete lines before new root
+    if new_root_linenr > 1 then
+        vim.api.nvim_buf_set_lines(bufnr, 0, new_root_linenr - 1, false, {})
     end
+
+    -- Unindent all remaining lines
+    if new_root_indent > 0 then
+        lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        for i, line in ipairs(lines) do
+            local prefix_end = line:find(":") or 0
+            local before = line:sub(1, prefix_end)
+            local after = line:sub(prefix_end + 1)
+            -- Remove indent
+            local spaces_to_remove = math.min(new_root_indent, #(after:match("^%s*") or ""))
+            lines[i] = before .. after:sub(spaces_to_remove + 1)
+        end
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    end
+
+    -- Sync to update pending edits after buffer manipulation
+    buffer.sync(bufnr)
 end
 
-M.expand_dir = function()
-    local bufnr, linenr, state, entry = _get_context()
-    _expand_dir(bufnr, linenr, state, entry)
-end
-
-M.collapse_parent = function()
-    -- TODO: implement
-end
-
-local _toggle_dir = function(bufnr, linenr, state, entry)
-    if not entry or entry.node.stat.type ~= "directory" then
+--- Refresh from filesystem (discards pending edits)
+function M.refresh()
+    local bufnr, _, state, _ = get_context()
+    if not state then
         return
     end
 
-    if entry.node.expanded then
-        _collapse_dir(bufnr, linenr, state, entry)
-    else
-        _expand_dir(bufnr, linenr, state, entry)
-    end
-end
-
-M.toggle_dir = function()
-    local bufnr, linenr, state, entry = _get_context()
-    _toggle_dir(bufnr, linenr, state, entry)
-end
-
---- Open file or descend into directory
-M.open = function()
-    local bufnr, linenr, state, entry = _get_context()
-    if not entry then
-        return
-    end
-
-    if entry.node.stat.type == "directory" then
-        _toggle_dir(bufnr, linenr, state, entry)
-    else
-        -- Open file
-        vim.cmd("edit " .. vim.fn.fnameescape(entry.node.path))
-    end
-end
-
---- Sets parent as root
-M.parent = function()
-    local bufnr, _, state, _ = _get_context()
-
-    local root = state.root
-    local parent_path = vim.fs.dirname(root.path)
-
-    -- Check if we have a cached parent (from a previous set_root)
-    local cached = state.parent_cache[parent_path]
-    if cached then
-        -- Get current buffer lines (subdir contents, possibly edited)
-        local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-
-        -- Indent current lines by 4 (they become children of current root dir)
-        local indented_subdir_lines = {}
-        for _, line in ipairs(current_lines) do
-            if line ~= "" then
-                local prefix_end = line:find(":") or 0
-                local before = line:sub(1, prefix_end)
-                local after = line:sub(prefix_end + 1)
-                indented_subdir_lines[#indented_subdir_lines + 1] = before .. "    " .. after
-            end
-        end
-
-        -- Create entry and line for current root (the subdir becoming a child dir)
-        local root_id = buffer.get_or_create_id(bufnr, root.path)
-        state.id_to_entry[root_id] = { node = root, depth = 0 }
-        local root_line = string.format("///%d:%s/", root_id, root.name)
-
-        -- Restore entries from cache
-        for id, entry in pairs(cached.entries) do
-            state.id_to_entry[id] = entry
-        end
-
-        -- Build path -> lines mapping for sorting
-        local path_to_lines = {}
-        for _, line in ipairs(cached.lines) do
-            local id = buffer.parse_line(line)
-            if id then
-                local entry = state.id_to_entry[id]
-                if entry then
-                    path_to_lines[entry.node.path] = { line }
-                end
-            else
-                -- New line without ID - use name as pseudo-path for sorting
-                local _, _, name, _ = buffer.parse_line(line)
-                path_to_lines[parent_path .. "/" .. name] = { line }
-            end
-        end
-        -- Add current root (now a child dir) with its indented children
-        path_to_lines[root.path] = { root_line }
-        for _, sl in ipairs(indented_subdir_lines) do
-            path_to_lines[root.path][#path_to_lines[root.path] + 1] = sl
-        end
-
-        -- Sort paths using the cached parent's sort function
-        local paths = vim.tbl_keys(path_to_lines)
-        cached.node.sort(paths)
-
-        -- Build combined output
-        local combined = {}
-        for _, path in ipairs(paths) do
-            for _, line in ipairs(path_to_lines[path]) do
-                combined[#combined + 1] = line
-            end
-        end
-
-        -- Update collapse_cache indentation for entries under current root (they're now one level deeper)
-        adjust_collapse_cache_indent(state, root.path, 4)
-
-        state.root = cached.node
-        state.parent_cache[parent_path] = nil
-
-        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, combined)
-        buffer.refresh_extmarks(bufnr, 0, -1)
-        buffer.refresh_header(bufnr)
-        return
-    end
-
-    -- No cache, create fresh parent
-    local parent, err = Tree.new(parent_path, root.sort)
-    if not parent then
-        vim.notify("sap: " .. err, vim.log.levels.ERROR)
-        return
-    end
-
-    parent.children = {}
-    parent.expanded = true
-    local ok, sync_err = parent:sync()
-    if not ok then
-        vim.notify("sap: " .. sync_err, vim.log.levels.ERROR)
-        return
-    end
-    parent.children[root.path] = root -- ensures we keep config for the soon to be child
-
-    -- Update collapse_cache indentation for entries under current root (they're now one level deeper)
-    adjust_collapse_cache_indent(state, root.path, 4)
-
-    state.root = parent
-    buffer.render(bufnr)
-end
-
-M.set_root = function()
-    local bufnr, linenr, state, entry = _get_context()
-    if not entry then
-        return
-    end
-
-    local new_root_path = entry.node.path
-    -- Cache current buffer lines that are NOT under the new root
-    local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    local cached_lines = {}
-    local cached_entries = {}
-
-    for _, line in ipairs(current_lines) do
-        local id, indent, name, ftype = buffer.parse_line(line)
-        if id then
-            local e = state.id_to_entry[id]
-            if e then
-                local entry_path = e.node.path
-                -- Cache if not under new root (and not the new root itself)
-                local is_under_new_root = entry_path:sub(1, #new_root_path) == new_root_path
-                if not is_under_new_root then
-                    cached_lines[#cached_lines + 1] = line
-                    cached_entries[id] = e
-                end
-            end
-        else
-            -- New line (no ID) - cache if at root level (indent 0)
-            -- These are new files/dirs created in the parent
-            if indent == 0 and name ~= "" then
-                cached_lines[#cached_lines + 1] = line
-            end
-        end
-    end
-
-    if #cached_lines > 0 then
-        state.parent_cache[state.root.path] = {
-            node = state.root,
-            lines = cached_lines,
-            entries = cached_entries,
-        }
-    end
-
-    local new_root = entry.node
-    new_root.expanded = true
-    new_root:sync()
-
-    -- Update collapse_cache indentation for entries under new root (one level shallower)
-    adjust_collapse_cache_indent(state, new_root_path, -4)
-
-    -- Remove new root from id_to_entry (it's now the header, not an editable entry)
-    local new_root_id = state.path_to_id[new_root_path]
-    if new_root_id then
-        state.id_to_entry[new_root_id] = nil
-    end
-
-    state.root = new_root
-    buffer.render(bufnr)
-end
-
---- Refresh current directory
-M.refresh = function()
-    local bufnr, _, state, _ = _get_context()
-    state.collapse_cache = {}
-    state.parent_cache = {}
-    state.root:sync()
+    -- Refresh clears pending edits and reloads from filesystem
+    state:refresh()
     buffer.render(bufnr)
 end
 
 --- Toggle hidden files visibility
-M.toggle_hidden = function()
-    local bufnr, _, state, entry = _get_context()
+function M.toggle_hidden()
+    local bufnr, _, state, _ = get_context()
+    if not state then
+        return
+    end
+
+    -- Sync before toggling to capture any pending edits
+    buffer.sync(bufnr)
+
     state.show_hidden = not state.show_hidden
     buffer.render(bufnr)
 end
 
-M.indent = function(visual)
+--- Find line range of children under a directory (by indentation)
+---@param bufnr integer
+---@param dir_linenr integer
+---@return integer start_line (1-indexed, first child)
+---@return integer end_line (1-indexed, last child)
+local function find_child_line_range(bufnr, dir_linenr)
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local dir_line = lines[dir_linenr]
+    if not dir_line then
+        return dir_linenr, dir_linenr - 1  -- empty range
+    end
+
+    -- Get indent of directory line
+    local _, dir_indent = parser.parse_line(dir_line)
+
+    -- Find children (lines with greater indent until we hit same/less)
+    local start_line = dir_linenr + 1
+    local end_line = dir_linenr  -- no children yet
+
+    for i = start_line, #lines do
+        local _, indent = parser.parse_line(lines[i])
+        if indent > dir_indent then
+            end_line = i
+        else
+            break
+        end
+    end
+
+    return start_line, end_line
+end
+
+--- Expand directory (in place)
+function M.expand()
+    local bufnr, linenr, state, entry = get_context()
+    if not entry or not state then
+        return
+    end
+
+    if entry.type ~= "directory" then
+        return
+    end
+
+    local ok, err = state:expand(entry)
+    if not ok then
+        vim.notify("sap: " .. err, vim.log.levels.WARN)
+        return
+    end
+
+    -- Get children from state (respects pending deletes/moves/creates)
+    local children = state:get_children(entry.path)
+
+    if #children == 0 then
+        return
+    end
+
+    -- Get current line's indent level to calculate child indent
+    local line = vim.api.nvim_buf_get_lines(bufnr, linenr - 1, linenr, false)[1]
+    local _, parent_indent = parser.parse_line(line)
+    local indent_size = require("sap.config").options.indent_size or 4
+    local child_indent_level = (parent_indent / indent_size) + 1
+
+    -- Generate and insert lines
+    local new_lines = render.entries_to_lines(children, child_indent_level)
+    vim.api.nvim_buf_set_lines(bufnr, linenr, linenr, false, new_lines)
+
+    -- Sync to detect any changes
+    buffer.sync(bufnr)
+end
+
+--- Collapse directory (in place)
+function M.collapse()
+    local bufnr, linenr, state, entry = get_context()
+    if not entry or not state then
+        return
+    end
+
+    if entry.type ~= "directory" then
+        return
+    end
+
+    -- Sync before collapsing to capture any pending edits from children
+    buffer.sync(bufnr)
+
+    -- Find child lines in buffer
+    local start_line, end_line = find_child_line_range(bufnr, linenr)
+
+    if end_line >= start_line then
+        -- Delete child lines
+        vim.api.nvim_buf_set_lines(bufnr, start_line - 1, end_line, false, {})
+    end
+
+    state:collapse(entry)
+
+    -- Sync again to update pending edits after buffer manipulation
+    buffer.sync(bufnr)
+end
+
+-- Helper for indent/unindent
+local function shift_lines(bufnr, start_line, end_line, delta)
+    for lnum = start_line, end_line do
+        local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1]
+        local prefix_end = line:find(":") or 0
+        local before = line:sub(1, prefix_end)
+        local after = line:sub(prefix_end + 1)
+
+        local new_line
+        if delta > 0 then
+            new_line = before .. string.rep(" ", delta) .. after
+        else
+            local spaces = math.min(-delta, #(after:match("^%s*") or ""))
+            new_line = before .. after:sub(spaces + 1)
+        end
+
+        vim.api.nvim_buf_set_lines(bufnr, lnum - 1, lnum, false, { new_line })
+    end
+end
+
+--- Indent lines (normal or visual mode)
+---@param visual boolean
+function M.indent(visual)
     return function()
-        local bufnr, _, _, _ = _get_context()
+        local bufnr = vim.api.nvim_get_current_buf()
         local start_line, end_line
 
         if visual then
@@ -355,38 +308,26 @@ M.indent = function(visual)
             end_line = start_line
         end
 
-        for lnum = start_line, end_line do
-            local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1]
-            local prefix_end = line:find(":") or 0
-            local before = line:sub(1, prefix_end)
-            local after = line:sub(prefix_end + 1)
-            local new_line = before .. string.rep(" ", vim.bo.shiftwidth) .. after
-            vim.api.nvim_buf_set_lines(bufnr, lnum - 1, lnum, false, { new_line })
-        end
+        shift_lines(bufnr, start_line, end_line, vim.bo.shiftwidth)
     end
 end
 
-M.unindent = function(visual)
+--- Unindent lines (normal or visual mode)
+---@param visual boolean
+function M.unindent(visual)
     return function()
-        local bufnr, linenr, _, _ = _get_context()
-        local end_line
+        local bufnr = vim.api.nvim_get_current_buf()
+        local start_line, end_line
 
         if visual then
-            linenr = vim.fn.line("'<")
+            start_line = vim.fn.line("'<")
             end_line = vim.fn.line("'>")
         else
-            end_line = linenr
+            start_line = vim.fn.line(".")
+            end_line = start_line
         end
 
-        for lnum = linenr, end_line do
-            local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1]
-            local prefix_end = line:find(":") or 0
-            local before = line:sub(1, prefix_end)
-            local after = line:sub(prefix_end + 1)
-            local spaces = math.min(vim.bo.shiftwidth, #(after:match("^%s*") or ""))
-            local new_line = before .. after:sub(spaces + 1)
-            vim.api.nvim_buf_set_lines(bufnr, lnum - 1, lnum, false, { new_line })
-        end
+        shift_lines(bufnr, start_line, end_line, -vim.bo.shiftwidth)
     end
 end
 

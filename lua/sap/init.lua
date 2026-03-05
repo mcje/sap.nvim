@@ -32,10 +32,14 @@ M.open = function(path)
             buffer.close(bufnr)
         elseif cmd == "toggle_hidden" then
             actions.toggle_hidden()
+        elseif cmd == "expand" then
+            actions.expand()
+        elseif cmd == "collapse" then
+            actions.collapse()
         elseif cmd == "indent" then
-            actions.indent(opts.range > 0)() -- visual mode if range given
+            actions.indent(opts.range > 0)()
         elseif cmd == "unindent" then
-            actions.unindent(opts.range > 0)() -- visual mode if range given
+            actions.unindent(opts.range > 0)()
         end
     end, { nargs = 1, range = true })
 
