@@ -6,15 +6,6 @@ local M = {}
 
 local ns = vim.api.nvim_create_namespace("sap")
 
--- Lazy reference to avoid circular dependency
-local function get_buffer_state(bufnr)
-    local ok, buffer = pcall(require, "sap.buffer")
-    if ok and buffer.states then
-        return buffer.states[bufnr]
-    end
-    return nil
-end
-
 local function get_indent_size()
     return config.options.indent_size or 4
 end
@@ -74,10 +65,11 @@ local function get_icon_and_hl(entry, state, icons_cfg)
 end
 
 --- Setup decoration provider for icons and highlights
-function M.setup_decoration_provider()
+---@param states table<integer, State>
+function M.setup_decoration_provider(states)
     vim.api.nvim_set_decoration_provider(ns, {
         on_line = function(_, _, bufnr, row)
-            local state = get_buffer_state(bufnr)
+            local state = states[bufnr]
             if not state then
                 return
             end

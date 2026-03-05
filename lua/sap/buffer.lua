@@ -42,7 +42,7 @@ local function debounced_sync(bufnr)
 end
 
 render.setup_highlights()
-render.setup_decoration_provider()
+render.setup_decoration_provider(M.states)
 
 local function setup_buffer_options(bufnr, bufname)
     vim.api.nvim_buf_set_name(bufnr, bufname)
