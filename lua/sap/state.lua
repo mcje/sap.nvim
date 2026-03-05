@@ -402,4 +402,38 @@ function State:is_exec(entry)
     return bit.band(entry.stat.mode, tonumber("111", 8)) ~= 0
 end
 
+--- Check if an entry is intentionally not visible (outside root, collapsed, or hidden)
+--- Used to distinguish "user deleted this" from "this is just not shown right now"
+---@param entry Entry
+---@return boolean
+function State:is_intentionally_hidden(entry)
+    -- Entry is outside the current root (above or sibling of root)
+    -- Entry is "under root" if its path starts with root_path/
+    -- The root itself is also visible
+    if entry.path ~= self.root_path and not entry.path:match("^" .. vim.pesc(self.root_path) .. "/") then
+        return true
+    end
+
+    -- Entry itself is hidden and we're not showing hidden
+    if entry.hidden and not self.show_hidden then
+        return true
+    end
+
+    -- Entry is under a collapsed directory
+    local path = entry.path
+    local parent = vim.fs.dirname(path)
+    while parent and parent ~= path do
+        local parent_entry = self:get_by_path(parent)
+        if parent_entry and parent_entry.type == "directory" then
+            if not self:is_expanded(parent_entry) and parent ~= self.root_path then
+                return true
+            end
+        end
+        path = parent
+        parent = vim.fs.dirname(path)
+    end
+
+    return false
+end
+
 return State

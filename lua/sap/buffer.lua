@@ -118,40 +118,6 @@ function M.render(bufnr)
     render.render(bufnr, state)
 end
 
---- Check if an entry is intentionally not visible (outside root, collapsed, or hidden)
----@param state State
----@param entry Entry
----@return boolean
-local function is_intentionally_hidden(state, entry)
-    -- Check if entry is outside the current root (above or sibling of root)
-    -- Entry is "under root" if its path starts with root_path/
-    -- The root itself is also visible
-    local root = state.root_path
-    if entry.path ~= root and not entry.path:match("^" .. vim.pesc(root) .. "/") then
-        return true
-    end
-
-    -- Check if entry itself is hidden and we're not showing hidden
-    if entry.hidden and not state.show_hidden then
-        return true
-    end
-
-    -- Check if under a collapsed directory
-    local path = entry.path
-    local parent = vim.fs.dirname(path)
-    while parent and parent ~= path do
-        local parent_entry = state:get_by_path(parent)
-        if parent_entry and parent_entry.type == "directory" then
-            if not state:is_expanded(parent_entry) and parent ~= state.root_path then
-                return true
-            end
-        end
-        path = parent
-        parent = vim.fs.dirname(path)
-    end
-    return false
-end
-
 --- Sync buffer edits to state's pending edits
 --- Called on TextChanged to detect deletions, moves, and creates
 --- Only updates pending edits for entries that SHOULD be visible (under root, expanded, not hidden)
@@ -184,20 +150,20 @@ function M.sync(bufnr)
     -- Restore pending edits for entries outside current root
     for path, _ in pairs(old_deletes) do
         local entry = state:get_by_path(path)
-        if entry and is_intentionally_hidden(state, entry) then
+        if entry and state:is_intentionally_hidden(entry) then
             state.pending_deletes[path] = true
         end
     end
     for from_path, to_path in pairs(old_moves) do
         local entry = state:get_by_path(from_path)
-        if entry and is_intentionally_hidden(state, entry) then
+        if entry and state:is_intentionally_hidden(entry) then
             state.pending_moves[from_path] = to_path
         end
     end
     for path, create in pairs(old_creates) do
         -- Check if create's parent is outside root
         local parent_entry = state:get_by_path(create.parent_path)
-        if parent_entry and is_intentionally_hidden(state, parent_entry) then
+        if parent_entry and state:is_intentionally_hidden(parent_entry) then
             state.pending_creates[path] = create
         end
     end
@@ -205,7 +171,7 @@ function M.sync(bufnr)
     -- Check each entry in state against buffer
     for id, entry in pairs(state.entries) do
         -- Skip entries that are intentionally hidden (outside root, collapsed, hidden)
-        if is_intentionally_hidden(state, entry) then
+        if state:is_intentionally_hidden(entry) then
             goto continue
         end
 

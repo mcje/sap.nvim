@@ -6,40 +6,6 @@ local M = {}
 ---@field copies {from: string, to: string, type: string}[]
 ---@field deletes {path: string, type: string}[]
 
---- Check if an entry is intentionally not visible (outside root, collapsed, or hidden)
----@param state State
----@param entry Entry
----@return boolean
-local function is_intentionally_hidden(state, entry)
-    -- Check if entry is outside the current root (above or sibling of root)
-    -- Entry is "under root" if its path starts with root_path/
-    -- The root itself is also visible
-    local root = state.root_path
-    if entry.path ~= root and not entry.path:match("^" .. vim.pesc(root) .. "/") then
-        return true
-    end
-
-    -- Check if entry itself is hidden and we're not showing hidden
-    if entry.hidden and not state.show_hidden then
-        return true
-    end
-
-    -- Check if under a collapsed directory
-    local path = entry.path
-    local parent = vim.fs.dirname(path)
-    while parent and parent ~= path do
-        local parent_entry = state:get_by_path(parent)
-        if parent_entry and parent_entry.type == "directory" then
-            if not state:is_expanded(parent_entry) and parent ~= state.root_path then
-                return true
-            end
-        end
-        path = parent
-        parent = vim.fs.dirname(path)
-    end
-    return false
-end
-
 --- Calculate diff between current state and parsed buffer
 ---@param state State
 ---@param parsed ParsedEntry[]
@@ -107,7 +73,7 @@ function M.calculate(state, parsed)
     for id, entry in pairs(state.entries) do
         if not seen_ids[id] and not staying[entry.path] then
             -- Only mark as delete if not intentionally hidden (collapsed/hidden)
-            if not is_intentionally_hidden(state, entry) then
+            if not state:is_intentionally_hidden(entry) then
                 deletes[#deletes + 1] = {
                     path = entry.path,
                     type = entry.type,

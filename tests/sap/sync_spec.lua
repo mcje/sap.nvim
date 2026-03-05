@@ -30,46 +30,17 @@ describe("sap.buffer sync", function()
         end
     end)
 
-    -- Simulates is_intentionally_hidden logic from buffer.lua
-    local function is_intentionally_hidden(state, entry)
-        -- Check if entry is outside the current root
-        local root = state.root_path
-        if entry.path ~= root and not entry.path:match("^" .. vim.pesc(root) .. "/") then
-            return true
-        end
-
-        -- Check if entry itself is hidden and we're not showing hidden
-        if entry.hidden and not state.show_hidden then
-            return true
-        end
-
-        -- Check if under a collapsed directory
-        local path = entry.path
-        local parent = vim.fs.dirname(path)
-        while parent and parent ~= path do
-            local parent_entry = state:get_by_path(parent)
-            if parent_entry and parent_entry.type == "directory" then
-                if not state:is_expanded(parent_entry) and parent ~= state.root_path then
-                    return true
-                end
-            end
-            path = parent
-            parent = vim.fs.dirname(path)
-        end
-        return false
-    end
-
     describe("is_intentionally_hidden", function()
         it("should return false for root entry", function()
             local state = State.new(test_dir)
             local root = state:get_by_path(test_dir)
-            assert.is_false(is_intentionally_hidden(state, root))
+            assert.is_false(state:is_intentionally_hidden(root))
         end)
 
         it("should return false for direct children of root", function()
             local state = State.new(test_dir)
             local child = state:get_by_path(test_dir .. "/child")
-            assert.is_false(is_intentionally_hidden(state, child))
+            assert.is_false(state:is_intentionally_hidden(child))
         end)
 
         it("should return true for entries outside root", function()
@@ -79,7 +50,7 @@ describe("sap.buffer sync", function()
             state:add_entry(test_dir, nil)
 
             local parent_entry = state:get_by_path(test_dir)
-            assert.is_true(is_intentionally_hidden(state, parent_entry))
+            assert.is_true(state:is_intentionally_hidden(parent_entry))
         end)
 
         it("should return true for siblings when root is child dir", function()
@@ -91,7 +62,7 @@ describe("sap.buffer sync", function()
             -- sibling should now be "intentionally hidden" because it's not under child
             local sibling = state:get_by_path(test_dir .. "/sibling")
             if sibling then
-                assert.is_true(is_intentionally_hidden(state, sibling))
+                assert.is_true(state:is_intentionally_hidden(sibling))
             end
         end)
 
@@ -103,7 +74,7 @@ describe("sap.buffer sync", function()
 
             local nested = state:get_by_path(test_dir .. "/child/nested.txt")
             if nested then
-                assert.is_true(is_intentionally_hidden(state, nested))
+                assert.is_true(state:is_intentionally_hidden(nested))
             end
         end)
 
@@ -111,7 +82,7 @@ describe("sap.buffer sync", function()
             local state = State.new(test_dir, false) -- show_hidden = false
             local hidden = state:get_by_path(test_dir .. "/.hidden")
             if hidden then
-                assert.is_true(is_intentionally_hidden(state, hidden))
+                assert.is_true(state:is_intentionally_hidden(hidden))
             end
         end)
 
@@ -119,7 +90,7 @@ describe("sap.buffer sync", function()
             local state = State.new(test_dir, true) -- show_hidden = true
             local hidden = state:get_by_path(test_dir .. "/.hidden")
             assert.is_not_nil(hidden)
-            assert.is_false(is_intentionally_hidden(state, hidden))
+            assert.is_false(state:is_intentionally_hidden(hidden))
         end)
     end)
 
@@ -130,7 +101,7 @@ describe("sap.buffer sync", function()
 
             for id, entry in pairs(state.entries) do
                 if not visible_ids[id] then
-                    if not is_intentionally_hidden(state, entry) then
+                    if not state:is_intentionally_hidden(entry) then
                         state:mark_delete(entry.path)
                     end
                 end
@@ -264,7 +235,7 @@ describe("sap.buffer sync", function()
             -- Restore deletes for entries outside root
             for path, _ in pairs(old_deletes) do
                 local entry = state:get_by_path(path)
-                if entry and is_intentionally_hidden(state, entry) then
+                if entry and state:is_intentionally_hidden(entry) then
                     state.pending_deletes[path] = true
                 end
             end
