@@ -5,7 +5,7 @@ local constants = require("sap.constants")
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("sap")
-local ns_icons = vim.api.nvim_create_namespace("sap_icons")  -- Separate namespace for inline icons
+local ns_icons = vim.api.nvim_create_namespace("sap_icons") -- Separate namespace for inline icons
 
 -- Pre-computed guide info per buffer: bufnr -> { [row] = { guide = "...", is_expanded = bool } }
 ---@type table<integer, table<integer, { guide: string, is_expanded: boolean?, is_dir: boolean }>>
@@ -81,7 +81,7 @@ function M.setup_decoration_provider(states)
         on_start = function(_, tick)
             -- Clear non-ephemeral icon extmarks before redraw
             -- We track which buffers we've cleared this tick to avoid redundant clears
-            return true  -- Continue with on_line calls
+            return true -- Continue with on_line calls
         end,
         on_win = function(_, _, bufnr, toprow, botrow)
             -- Clear icon extmarks for visible range before redrawing
@@ -159,7 +159,8 @@ function M.setup_decoration_provider(states)
             end
 
             -- Expand/collapse indicator for directories
-            -- NOTE: Also uses ns_icons since inline + ephemeral doesn't work
+            -- NOTE: inline + ephemeral doesn't work in Neovim, so we use
+            -- non-ephemeral extmarks in a separate namespace, cleared in on_win
             if guides_cfg and guides_cfg.enabled and ftype == "directory" then
                 local line_info = M.line_info[bufnr] and M.line_info[bufnr][row]
                 local is_expanded = line_info and line_info.is_expanded
@@ -171,12 +172,11 @@ function M.setup_decoration_provider(states)
                         virt_text = { { indicator .. " ", indicator_hl } },
                         virt_text_pos = "inline",
                     })
+                    icon = nil -- HACK: Discard icon when we use directory icons
                 end
             end
 
             -- File type icon (inline virtual text)
-            -- NOTE: inline + ephemeral doesn't work in Neovim, so we use
-            -- non-ephemeral extmarks in a separate namespace, cleared in on_win
             if icon and icon ~= "" then
                 vim.api.nvim_buf_set_extmark(bufnr, ns_icons, row, col, {
                     virt_text = { { icon .. " ", icon_hl } },
