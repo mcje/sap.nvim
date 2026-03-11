@@ -4,3 +4,50 @@ lua_modules/
 
 # Neovim
 .luarc.json
+
+# AI/LLM tools
+CLAUDE.md
+.claude/
+.cursorrules
+.cursorignore
+.cursor/
+.aider*
+aider.conf*
+.continue/
+.codeium/
+.tabnine*
+.cody/
+.copilot*
+copilot-instructions.md
+.github/copilot-instructions.md
+
+# Vim/Neovim swap/backup
+*.swp
+*.swo
+*.swn
+*~
+.netrwhist
+Session.vim
+
+# IDEs
+.idea/
+.vscode/
+*.sublime-*
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Tags
+tags
+TAGS
+.tags
+
+# Misc
+*.log
+*.bak
+*.orig
+*.tmp
