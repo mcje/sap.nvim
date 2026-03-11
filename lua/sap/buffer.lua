@@ -215,6 +215,7 @@ function M.create(path)
             return existing
         else
             -- Stale buffer (e.g., after module reload), wipe it
+            -- WARN: This force-deletes the buffer, losing any unsaved edits.
             vim.api.nvim_buf_delete(existing, { force = true })
         end
     end

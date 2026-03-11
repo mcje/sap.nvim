@@ -431,6 +431,7 @@ end
 ---@return integer? linenr (1-indexed)
 function M.find_linenr_by_id(bufnr, id)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    -- PERF: O(n) scan. Could use extmarks for O(1) lookup.
     for i, line in ipairs(lines) do
         local line_id = parser.parse_line(line)
         if line_id == id then
