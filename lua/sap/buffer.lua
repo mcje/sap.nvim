@@ -16,11 +16,6 @@ M.states = {}
 ---@type table<string, { full: string[], hash: string }>
 M.shadow_registers = {}
 
----@param lines string[]
----@return string
-local function hash_lines(lines)
-    return vim.fn.sha256(table.concat(lines, "\n"))
-end
 
 --- Strip ID prefix from line, return clean content
 ---@param line string
@@ -180,7 +175,7 @@ local function setup_autocmds(bufnr)
             local event = vim.v.event
             local reg = event.regname
             if reg == "" then
-                reg = vim.v.register -- default register
+                reg = '"' -- default register
             end
 
             -- Store full content in shadow register
@@ -189,7 +184,7 @@ local function setup_autocmds(bufnr)
 
             M.shadow_registers[reg] = {
                 full = full_lines,
-                hash = hash_lines(clean_lines),
+                hash = vim.fn.sha256(table.concat(clean_lines, "\n")),
             }
 
             -- Replace vim register with clean content (no ID prefix)
@@ -510,8 +505,12 @@ function M.smart_paste(before, reg)
     local vim_content = vim.fn.getreg(reg)
     local vim_type = vim.fn.getregtype(reg)
 
+    -- Linewise registers have trailing newline, strip for comparison
+    local content_for_hash = vim_content:gsub("\n$", "")
+
     -- Check if shadow matches current vim register content
-    if shadow and hash_lines(vim.split(vim_content, "\n", { plain = true })) == shadow.hash then
+    local hashes_match = shadow and vim.fn.sha256(content_for_hash) == shadow.hash
+    if hashes_match then
         -- Content matches - use shadow (preserves IDs)
         vim.fn.setreg(reg, shadow.full, vim_type)
     end
@@ -525,7 +524,7 @@ function M.smart_paste(before, reg)
     end
 
     -- Restore clean content to vim register (for external use)
-    if shadow and hash_lines(vim.split(vim_content, "\n", { plain = true })) == shadow.hash then
+    if hashes_match then
         vim.fn.setreg(reg, vim_content, vim_type)
     end
 end
