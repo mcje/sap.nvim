@@ -5,6 +5,7 @@ local constants = require("sap.constants")
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("sap")
+local ns_icons = vim.api.nvim_create_namespace("sap_icons")  -- Separate namespace for inline icons
 
 -- Pre-computed guide info per buffer: bufnr -> { [row] = { guide = "...", is_expanded = bool } }
 ---@type table<integer, table<integer, { guide: string, is_expanded: boolean?, is_dir: boolean }>>
@@ -42,7 +43,7 @@ local function get_icon_and_hl(entry, state, icons_cfg)
     local has_devicons, devicons = pcall(require, "nvim-web-devicons")
 
     local icon, icon_hl
-    if icons_cfg.use_devicons and has_devicons then
+    if icons_cfg.use_devicons ~= false and has_devicons then
         if entry.type == "directory" then
             icon, icon_hl = devicons.get_icon(entry.name, nil, { default = false })
         else
@@ -75,6 +76,17 @@ end
 ---@param states table<integer, State>
 function M.setup_decoration_provider(states)
     vim.api.nvim_set_decoration_provider(ns, {
+        on_start = function(_, tick)
+            -- Clear non-ephemeral icon extmarks before redraw
+            -- We track which buffers we've cleared this tick to avoid redundant clears
+            return true  -- Continue with on_line calls
+        end,
+        on_win = function(_, _, bufnr, toprow, botrow)
+            -- Clear icon extmarks for visible range before redrawing
+            if states[bufnr] then
+                vim.api.nvim_buf_clear_namespace(bufnr, ns_icons, toprow, botrow + 1)
+            end
+        end,
         on_line = function(_, _, bufnr, row)
             local state = states[bufnr]
             if not state then
@@ -145,6 +157,7 @@ function M.setup_decoration_provider(states)
             end
 
             -- Expand/collapse indicator for directories
+            -- NOTE: Also uses ns_icons since inline + ephemeral doesn't work
             if guides_cfg and guides_cfg.enabled and ftype == "directory" then
                 local line_info = M.line_info[bufnr] and M.line_info[bufnr][row]
                 local is_expanded = line_info and line_info.is_expanded
@@ -152,20 +165,20 @@ function M.setup_decoration_provider(states)
                     or guides_cfg.icons.collapsed
                 local indicator_hl = is_expanded and "SapExpanded" or "SapCollapsed"
                 if indicator and indicator ~= "" then
-                    vim.api.nvim_buf_set_extmark(bufnr, ns, row, col, {
+                    vim.api.nvim_buf_set_extmark(bufnr, ns_icons, row, col, {
                         virt_text = { { indicator, indicator_hl } },
                         virt_text_pos = "inline",
-                        ephemeral = true,
                     })
                 end
             end
 
-            -- File type icon (inline virtual text, ephemeral)
+            -- File type icon (inline virtual text)
+            -- NOTE: inline + ephemeral doesn't work in Neovim, so we use
+            -- non-ephemeral extmarks in a separate namespace, cleared in on_win
             if icon and icon ~= "" then
-                vim.api.nvim_buf_set_extmark(bufnr, ns, row, col, {
+                vim.api.nvim_buf_set_extmark(bufnr, ns_icons, row, col, {
                     virt_text = { { icon .. " ", icon_hl } },
                     virt_text_pos = "inline",
-                    ephemeral = true,
                 })
             end
 
@@ -724,7 +737,10 @@ function M.go_to_parent(bufnr, state)
             elseif past_old_root then
                 local suffix = sibling.type == "directory" and "/" or ""
                 local prefix = sibling.id and string.format(constants.ID_FORMAT, sibling.id) or ""
-                after_siblings[#after_siblings + 1] = prefix .. get_indent() .. sibling.name .. suffix
+                after_siblings[#after_siblings + 1] = prefix
+                    .. get_indent()
+                    .. sibling.name
+                    .. suffix
             end
         end
 
