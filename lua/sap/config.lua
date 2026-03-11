@@ -1,5 +1,8 @@
 local M = {}
 
+-- Use Nerd Font icons if devicons is available, otherwise unicode fallbacks
+local has_devicons = pcall(require, "nvim-web-devicons")
+
 M.defaults = {
     show_hidden = false,
     indent_size = 4,
@@ -21,8 +24,8 @@ M.defaults = {
     guides = {
         enabled = true,
         icons = {
-            expanded = "", -- expanded directory indicator
-            collapsed = "", -- collapsed directory indicator
+            expanded = has_devicons and "" or "▼",
+            collapsed = has_devicons and "" or "▶",
             middle = "├", -- middle child
             last = "└", -- last child
             pipe = "│", -- vertical connector

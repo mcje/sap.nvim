@@ -166,7 +166,7 @@ function M.setup_decoration_provider(states)
                 local indicator_hl = is_expanded and "SapExpanded" or "SapCollapsed"
                 if indicator and indicator ~= "" then
                     vim.api.nvim_buf_set_extmark(bufnr, ns_icons, row, col, {
-                        virt_text = { { indicator, indicator_hl } },
+                        virt_text = { { indicator .. " ", indicator_hl } },
                         virt_text_pos = "inline",
                     })
                 end
