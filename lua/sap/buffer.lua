@@ -11,6 +11,36 @@ local M = {}
 ---@type table<integer, State>
 M.states = {}
 
+--- Shadow registers for smart yank/paste
+--- Maps register name -> { full = "///{id}:...", hash = "..." }
+---@type table<string, { full: string[], hash: string }>
+M.shadow_registers = {}
+
+--- Simple hash for comparing register contents
+---@param lines string[]
+---@return string
+local function hash_lines(lines)
+    return table.concat(lines, "\n")
+end
+
+--- Strip ID prefix from line, return clean content
+---@param line string
+---@return string
+local function strip_id_prefix(line)
+    return line:gsub("^///%d+:", "")
+end
+
+--- Strip ID prefix from all lines
+---@param lines string[]
+---@return string[]
+local function strip_id_prefixes(lines)
+    local clean = {}
+    for _, line in ipairs(lines) do
+        clean[#clean + 1] = strip_id_prefix(line)
+    end
+    return clean
+end
+
 render.setup_highlights()
 render.setup_decoration_provider(M.states)
 
@@ -89,6 +119,31 @@ local function setup_autocmds(bufnr)
                     vim.cmd("redraw!")
                 end
             end))
+        end,
+    })
+
+    -- Smart yank: populate shadow register with full content (including ID)
+    -- Vim register gets clean content (without ID) for external paste
+    vim.api.nvim_create_autocmd("TextYankPost", {
+        buffer = bufnr,
+        callback = function()
+            local event = vim.v.event
+            local reg = event.regname
+            if reg == "" then
+                reg = vim.v.register -- default register
+            end
+
+            -- Store full content in shadow register
+            local full_lines = event.regcontents
+            local clean_lines = strip_id_prefixes(full_lines)
+
+            M.shadow_registers[reg] = {
+                full = full_lines,
+                hash = hash_lines(clean_lines),
+            }
+
+            -- Replace vim register with clean content (no ID prefix)
+            vim.fn.setreg(reg, clean_lines, event.regtype)
         end,
     })
 end
@@ -374,6 +429,40 @@ function M.clear_undo(bufnr)
     local line = vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or ""
     vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { line })
     vim.bo[bufnr].undolevels = old_undolevels
+end
+
+--- Smart paste: use shadow register if content matches, otherwise use vim register
+--- This preserves IDs for internal sap copy operations while allowing external paste
+---@param before boolean paste before cursor (P) or after (p)
+---@param reg string? register to paste from (default: v:register)
+function M.smart_paste(before, reg)
+    reg = reg or vim.v.register
+    if reg == "" then
+        reg = '"' -- default register
+    end
+
+    local shadow = M.shadow_registers[reg]
+    local vim_content = vim.fn.getreg(reg)
+    local vim_type = vim.fn.getregtype(reg)
+
+    -- Check if shadow matches current vim register content
+    if shadow and hash_lines(vim.split(vim_content, "\n", { plain = true })) == shadow.hash then
+        -- Content matches - use shadow (preserves IDs)
+        vim.fn.setreg(reg, shadow.full, vim_type)
+    end
+
+    -- Perform the paste
+    local paste_cmd = before and "P" or "p"
+    if reg == '"' then
+        vim.cmd("normal! " .. paste_cmd)
+    else
+        vim.cmd("normal! \"" .. reg .. paste_cmd)
+    end
+
+    -- Restore clean content to vim register (for external use)
+    if shadow and hash_lines(vim.split(vim_content, "\n", { plain = true })) == shadow.hash then
+        vim.fn.setreg(reg, vim_content, vim_type)
+    end
 end
 
 return M

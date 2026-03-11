@@ -40,6 +40,10 @@ M.open = function(path)
             actions.indent(opts.range > 0)()
         elseif cmd == "unindent" then
             actions.unindent(opts.range > 0)()
+        elseif cmd == "paste" then
+            actions.paste()
+        elseif cmd == "paste_before" then
+            actions.paste_before()
         end
     end, { nargs = 1, range = true })
 

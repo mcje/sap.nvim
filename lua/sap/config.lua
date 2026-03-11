@@ -44,6 +44,8 @@ M.defaults = {
         { "<<", "<cmd>Sap unindent<cr>", desc = "Unindent" },
         { ">", "<cmd>Sap indent<cr>", mode = "v", desc = "Indent" },
         { "<", "<cmd>Sap unindent<cr>", mode = "v", desc = "Unindent" },
+        { "p", "<cmd>Sap paste<cr>", desc = "Smart paste" },
+        { "P", "<cmd>Sap paste_before<cr>", desc = "Smart paste before" },
     },
 }
 

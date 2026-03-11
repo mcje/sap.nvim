@@ -232,4 +232,14 @@ function M.unindent(visual)
     end
 end
 
+--- Smart paste after cursor (preserves IDs for sap copies)
+function M.paste()
+    buffer.smart_paste(false)
+end
+
+--- Smart paste before cursor (preserves IDs for sap copies)
+function M.paste_before()
+    buffer.smart_paste(true)
+end
+
 return M
