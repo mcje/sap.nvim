@@ -16,11 +16,10 @@ M.states = {}
 ---@type table<string, { full: string[], hash: string }>
 M.shadow_registers = {}
 
---- Simple hash for comparing register contents
 ---@param lines string[]
 ---@return string
 local function hash_lines(lines)
-    return table.concat(lines, "\n")
+    return vim.fn.sha256(table.concat(lines, "\n"))
 end
 
 --- Strip ID prefix from line, return clean content
@@ -388,6 +387,8 @@ function M.save(bufnr)
         return
     end
 
+    -- WARN: Race condition - filesystem may have changed between diff calculation
+    -- and now (user was in confirm dialog). Operations may fail or act on stale state.
     local result = apply_changes(changes)
 
     -- Report what succeeded

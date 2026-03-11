@@ -301,8 +301,7 @@ end
 ---@return string[]
 function M.entries_to_lines(children, indent_level)
     local lines = {}
-    local indent_str = get_indent()
-    local indent = string.rep(indent_str, indent_level)
+    local indent = string.rep(" ", indent_level)
     for _, child in ipairs(children) do
         local suffix = child.type == "directory" and "/" or ""
         local prefix = child.id and string.format(constants.ID_FORMAT, child.id) or ""
@@ -545,10 +544,10 @@ function M.expand(bufnr, state, entry)
         return false
     end
 
-    -- Get entry's indent level
+    -- Get entry's indent and compute child indent
     local line = vim.api.nvim_buf_get_lines(bufnr, entry_line - 1, entry_line, false)[1]
     local _, entry_indent = parser.parse_line(line)
-    local child_depth = (entry_indent / get_indent_size()) + 1
+    local child_indent = entry_indent + get_indent_size()
 
     -- Mark expanded first (so get_children works)
     local ok, err = state:expand(entry)
@@ -570,7 +569,7 @@ function M.expand(bufnr, state, entry)
     else
         -- Load fresh from state/filesystem
         local children = state:get_children(entry.path)
-        new_lines = M.entries_to_lines(children, child_depth)
+        new_lines = M.entries_to_lines(children, child_indent)
     end
 
     -- Insert lines after the directory line
