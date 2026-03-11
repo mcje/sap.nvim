@@ -16,7 +16,6 @@ M.states = {}
 ---@type table<string, { full: string[], hash: string }>
 M.shadow_registers = {}
 
-
 --- Strip ID prefix from line, return clean content
 ---@param line string
 ---@return string
@@ -42,7 +41,7 @@ local function validate_entries(parsed)
     local errors = {}
 
     -- Track names per directory for duplicate detection
-    local names_in_dir = {}  -- parent_path -> { name -> linenr }
+    local names_in_dir = {} -- parent_path -> { name -> linenr }
 
     for _, p in ipairs(parsed) do
         local parent = vim.fs.dirname(p.path)
@@ -55,7 +54,8 @@ local function validate_entries(parsed)
 
         -- Reserved names
         if p.name == "." or p.name == ".." then
-            errors[#errors + 1] = string.format("line %d: '%s' is a reserved name", p.linenr, p.name)
+            errors[#errors + 1] =
+                string.format("line %d: '%s' is a reserved name", p.linenr, p.name)
             goto continue
         end
 
@@ -65,7 +65,8 @@ local function validate_entries(parsed)
             goto continue
         end
         if p.name:find("%z") then
-            errors[#errors + 1] = string.format("line %d: filename cannot contain NUL character", p.linenr)
+            errors[#errors + 1] =
+                string.format("line %d: filename cannot contain NUL character", p.linenr)
             goto continue
         end
 
@@ -74,7 +75,9 @@ local function validate_entries(parsed)
         if names_in_dir[parent][p.name] then
             errors[#errors + 1] = string.format(
                 "line %d: duplicate name '%s' (also on line %d)",
-                p.linenr, p.name, names_in_dir[parent][p.name]
+                p.linenr,
+                p.name,
+                names_in_dir[parent][p.name]
             )
         else
             names_in_dir[parent][p.name] = p.linenr
@@ -94,13 +97,15 @@ render.setup_decoration_provider(M.states)
 local function setup_buffer_options(bufnr, bufname)
     vim.api.nvim_buf_set_name(bufnr, bufname)
     vim.bo[bufnr].buftype = "acwrite"
-    vim.bo[bufnr].bufhidden = "hide"  -- Keep buffer alive when switching to files
+    vim.bo[bufnr].bufhidden = "hide" -- Keep buffer alive when switching to files
     vim.bo[bufnr].swapfile = false
     vim.bo[bufnr].filetype = "sap"
 
     -- Syntax for concealing ID prefix
     vim.api.nvim_buf_call(bufnr, function()
-        vim.cmd(string.format([[syntax match sapEntryId "%s" conceal]], constants.ID_SYNTAX_PATTERN))
+        vim.cmd(
+            string.format([[syntax match sapEntryId "%s" conceal]], constants.ID_SYNTAX_PATTERN)
+        )
     end)
 end
 
@@ -155,18 +160,58 @@ local function setup_autocmds(bufnr)
                 guide_timer:close()
             end
             guide_timer = vim.uv.new_timer()
-            guide_timer:start(100, 0, vim.schedule_wrap(function()
-                if guide_timer then
-                    guide_timer:close()
-                    guide_timer = nil
-                end
-                if vim.api.nvim_buf_is_valid(bufnr) and M.states[bufnr] then
-                    local state = M.states[bufnr]
-                    local parsed = parser.parse_buffer(bufnr, state.root_path)
-                    render.update_line_info_from_parsed(bufnr, parsed, state)
-                    vim.cmd("redraw!")
-                end
-            end))
+            guide_timer:start(
+                100,
+                0,
+                vim.schedule_wrap(function()
+                    if guide_timer then
+                        guide_timer:close()
+                        guide_timer = nil
+                    end
+                    if vim.api.nvim_buf_is_valid(bufnr) and M.states[bufnr] then
+                        local state = M.states[bufnr]
+                        local parsed = parser.parse_buffer(bufnr, state.root_path)
+                        render.update_line_info_from_parsed(bufnr, parsed, state)
+                        vim.cmd("redraw!")
+                    end
+                end)
+            )
+        end,
+    })
+
+    -- Sync modified flag with actual diff (debounce)
+    -- PERF: Calculates full diff; increase debounce if slow on large directories
+    -- or maybe just ignore this and only calc diff on exit / writes
+    local modified_timer = nil
+    vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+        buffer = bufnr,
+        callback = function()
+            if modified_timer then
+                modified_timer:stop()
+                modified_timer:close()
+            end
+            modified_timer = vim.uv.new_timer()
+            modified_timer:start(
+                500,
+                0,
+                vim.schedule_wrap(function()
+                    if modified_timer then
+                        modified_timer:close()
+                        modified_timer = nil
+                    end
+                    if vim.api.nvim_buf_is_valid(bufnr) and M.states[bufnr] then
+                        M.sync_modified(bufnr)
+                    end
+                end)
+            )
+        end,
+    })
+
+    -- QuitPre: check actual diff, prompt to save if changes exist
+    vim.api.nvim_create_autocmd("QuitPre", {
+        buffer = bufnr,
+        callback = function()
+            M.sync_modified(bufnr)
         end,
     })
 
@@ -253,10 +298,16 @@ local function confirm_changes(changes)
         lines[#lines + 1] = "  [CREATE] " .. format_path(c.path, c.type)
     end
     for _, c in ipairs(changes.copies) do
-        lines[#lines + 1] = "  [COPY] " .. format_path(c.from, c.type) .. " -> " .. format_path(c.to, c.type)
+        lines[#lines + 1] = "  [COPY] "
+            .. format_path(c.from, c.type)
+            .. " -> "
+            .. format_path(c.to, c.type)
     end
     for _, m in ipairs(changes.moves) do
-        lines[#lines + 1] = "  [MOVE] " .. format_path(m.from, m.type) .. " -> " .. format_path(m.to, m.type)
+        lines[#lines + 1] = "  [MOVE] "
+            .. format_path(m.from, m.type)
+            .. " -> "
+            .. format_path(m.to, m.type)
     end
     local delete_label = config.options.delete_method == "trash" and "[TRASH]" or "[DELETE]"
     for _, d in ipairs(changes.deletes) do
@@ -335,8 +386,8 @@ local function cached_to_parsed(cached)
             path = c.path,
             name = c.name,
             type = c.type,
-            indent = 0,  -- Not used for diff
-            linenr = 0,  -- Not in visible buffer
+            indent = 0, -- Not used for diff
+            linenr = 0, -- Not in visible buffer
         }
     end
     return result
@@ -483,6 +534,12 @@ function M.close(bufnr)
     end
 end
 
+--- Sync modified flag with actual diff (call after navigation changes)
+---@param bufnr integer
+function M.sync_modified(bufnr)
+    vim.bo[bufnr].modified = M.has_unsaved_changes(bufnr)
+end
+
 --- Clear undo history for buffer (prevents undoing past structural changes)
 ---@param bufnr integer
 function M.clear_undo(bufnr)
@@ -523,7 +580,7 @@ function M.smart_paste(before, reg)
     if reg == '"' then
         vim.cmd("normal! " .. paste_cmd)
     else
-        vim.cmd("normal! \"" .. reg .. paste_cmd)
+        vim.cmd('normal! "' .. reg .. paste_cmd)
     end
 
     -- Restore clean content to vim register (for external use)
