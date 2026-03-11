@@ -6,7 +6,7 @@ local M = {}
 ---@field copies {from: string, to: string, type: string}[]
 ---@field deletes {path: string, type: string}[]
 
---- Calculate diff between current state and parsed buffer
+--- Calculate diff by comparing parsed buffer against state.entries (original filesystem state)
 ---@param state State
 ---@param parsed ParsedEntry[]
 ---@return Changes
@@ -16,183 +16,78 @@ function M.calculate(state, parsed)
     local copies = {}
     local deletes = {}
 
-    local seen_ids = {}       -- ids that appear in buffer
-    local staying = {}        -- paths that aren't moving (same id, same path)
+    -- Build map: id -> list of paths where this ID appears in buffer
+    local id_to_paths = {}  -- id -> {path, type}[]
+    local seen_ids = {}     -- quick lookup
 
-    -- First pass: find entries that are staying in place
     for _, p in ipairs(parsed) do
         if p.id then
-            local entry = state:get_by_id(p.id)
-            if entry and entry.path == p.path then
-                staying[entry.path] = true
-            end
+            seen_ids[p.id] = true
+            id_to_paths[p.id] = id_to_paths[p.id] or {}
+            table.insert(id_to_paths[p.id], { path = p.path, type = p.type })
+        else
+            -- Line without ID = new entry = CREATE
+            creates[#creates + 1] = {
+                path = p.path,
+                type = p.type,
+            }
         end
     end
 
-    -- Second pass: categorize all entries
-    for _, p in ipairs(parsed) do
-        if not p.id then
-            -- No id = new entry = create (unless it's a tracked copy or move destination)
-            local pending = state.pending_creates[p.path]
-            if pending and pending.copy_of then
-                -- It's a copy tracked in pending_creates, will be handled later
-                -- Skip adding to creates
-            else
-                -- Check if this is a move destination
-                local is_move_dest = false
-                for _, to_path in pairs(state.pending_moves) do
-                    if to_path == p.path then
-                        is_move_dest = true
-                        break
-                    end
+    -- For each original entry, determine what happened
+    for id, entry in pairs(state.entries) do
+        local paths = id_to_paths[id]
+
+        if not paths or #paths == 0 then
+            -- ID not in buffer at all
+            -- Only DELETE if not intentionally hidden (collapsed, outside root, etc.)
+            if not state:is_intentionally_hidden(entry) then
+                deletes[#deletes + 1] = {
+                    path = entry.path,
+                    type = entry.type,
+                }
+            end
+        else
+            -- ID appears in buffer - check if at original location or moved/copied
+            local original_in_buffer = false
+            local other_paths = {}
+
+            for _, p in ipairs(paths) do
+                if p.path == entry.path then
+                    original_in_buffer = true
+                else
+                    table.insert(other_paths, p)
                 end
-                if not is_move_dest then
-                    creates[#creates + 1] = {
-                        path = p.path,
+            end
+
+            if original_in_buffer then
+                -- Original stays in place, any other occurrences are COPY
+                for _, p in ipairs(other_paths) do
+                    copies[#copies + 1] = {
+                        from = entry.path,
+                        to = p.path,
                         type = p.type,
                     }
                 end
-            end
-        else
-            seen_ids[p.id] = true
-            local entry = state:get_by_id(p.id)
-
-            if entry then
-                local original_path = entry.path
-                local intended_path = p.path
-
-                if original_path ~= intended_path then
-                    -- Path changed
-                    if not staying[original_path] then
-                        -- Original location is empty = move
-                        moves[#moves + 1] = {
-                            from = original_path,
-                            to = intended_path,
-                            type = p.type,
-                        }
-                        staying[original_path] = true  -- can only move once
-                    else
-                        -- Original still exists = copy
-                        copies[#copies + 1] = {
-                            from = original_path,
-                            to = intended_path,
-                            type = p.type,
-                        }
-                    end
-                end
-                -- else: same path = no change
-            end
-        end
-    end
-
-    -- Third pass: find deletes (entries not in buffer, not intentionally hidden)
-    for id, entry in pairs(state.entries) do
-        if not seen_ids[id] and not staying[entry.path] then
-            -- Only mark as delete if not intentionally hidden (collapsed/hidden)
-            -- and not already tracked as a move
-            if not state:is_intentionally_hidden(entry) and not state.pending_moves[entry.path] then
-                deletes[#deletes + 1] = {
-                    path = entry.path,
-                    type = entry.type,
+            else
+                -- Original not in buffer
+                -- First occurrence is a MOVE, rest are COPY from the move destination
+                local first = other_paths[1]
+                moves[#moves + 1] = {
+                    from = entry.path,
+                    to = first.path,
+                    type = first.type,
                 }
-            end
-        end
-    end
 
-    -- Fourth pass: include pending_deletes (user deletions preserved across navigation)
-    for path, _ in pairs(state.pending_deletes) do
-        -- Avoid duplicates
-        local already_added = false
-        for _, d in ipairs(deletes) do
-            if d.path == path then
-                already_added = true
-                break
-            end
-        end
-        if not already_added then
-            local entry = state:get_by_path(path)
-            if entry then
-                deletes[#deletes + 1] = {
-                    path = entry.path,
-                    type = entry.type,
-                }
-            end
-        end
-    end
-
-    -- Also include pending_moves and pending_creates
-    for from_path, to_path in pairs(state.pending_moves) do
-        -- Skip if this is actually a copy (original still exists at source)
-        local dominated_by_copy = false
-        local pending_create = state.pending_creates[to_path]
-        if pending_create and pending_create.copy_of == from_path then
-            dominated_by_copy = true
-        end
-
-        if not dominated_by_copy then
-            local already_added = false
-            for _, m in ipairs(moves) do
-                if m.from == from_path then
-                    already_added = true
-                    break
-                end
-            end
-            if not already_added then
-                local entry = state:get_by_path(from_path)
-                if entry then
-                    moves[#moves + 1] = {
-                        from = from_path,
-                        to = to_path,
-                        type = entry.type,
+                -- Additional occurrences are copies of the moved file
+                for i = 2, #other_paths do
+                    local p = other_paths[i]
+                    copies[#copies + 1] = {
+                        from = first.path,  -- Copy from move destination
+                        to = p.path,
+                        type = p.type,
                     }
                 end
-            end
-        end
-    end
-
-    for path, create in pairs(state.pending_creates) do
-        if create.copy_of then
-            -- It's a copy, not a plain create
-            -- Check not already in copies
-            local already_in_copies = false
-            for _, c in ipairs(copies) do
-                if c.to == path then
-                    already_in_copies = true
-                    break
-                end
-            end
-            -- Also remove from moves if present (copy takes precedence when original exists)
-            local move_idx = nil
-            for i, m in ipairs(moves) do
-                if m.from == create.copy_of and m.to == path then
-                    move_idx = i
-                    break
-                end
-            end
-            if move_idx then
-                table.remove(moves, move_idx)
-            end
-            if not already_in_copies then
-                copies[#copies + 1] = {
-                    from = create.copy_of,
-                    to = path,
-                    type = create.type,
-                }
-            end
-        else
-            -- Regular create
-            local already_added = false
-            for _, c in ipairs(creates) do
-                if c.path == path then
-                    already_added = true
-                    break
-                end
-            end
-            if not already_added then
-                creates[#creates + 1] = {
-                    path = path,
-                    type = create.type,
-                }
             end
         end
     end

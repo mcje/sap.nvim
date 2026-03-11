@@ -4,6 +4,9 @@ M.defaults = {
     show_hidden = false,
     indent_size = 4,
 
+    -- "view" = save current view only, "global" = include all cached content
+    save_scope = "global",
+
     icons = {
         use_devicons = true,
         directory = "",

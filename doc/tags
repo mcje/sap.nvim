@@ -1,5 +1,6 @@
 :Sap	sap.txt	/*:Sap*
 sap-commands	sap.txt	/*sap-commands*
+sap-config-guides	sap.txt	/*sap-config-guides*
 sap-config-icons	sap.txt	/*sap-config-icons*
 sap-config-indent_size	sap.txt	/*sap-config-indent_size*
 sap-config-keys	sap.txt	/*sap-config-keys*

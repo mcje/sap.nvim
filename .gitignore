@@ -1,0 +1,6 @@
+# Lua
+*.luac
+lua_modules/
+
+# Neovim
+.luarc.json

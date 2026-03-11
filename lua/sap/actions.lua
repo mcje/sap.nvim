@@ -1,6 +1,7 @@
 local buffer = require("sap.buffer")
 local parser = require("sap.parser")
 local render = require("sap.render")
+local diff = require("sap.diff")
 local opts = require("sap.config").options
 
 local M = {}
@@ -11,6 +12,16 @@ local function get_context()
     local state = buffer.get_state(bufnr)
     local entry = buffer.get_entry_at_line(bufnr, linenr)
     return bufnr, linenr, state, entry
+end
+
+--- Check if buffer has unsaved changes (visible entries differ from state)
+---@param bufnr integer
+---@param state State
+---@return boolean
+local function has_unsaved_changes(bufnr, state)
+    local parsed = parser.parse_buffer(bufnr, state.root_path)
+    local changes = diff.calculate(state, parsed)
+    return not diff.is_empty(changes)
 end
 
 --- Open file or toggle directory
@@ -87,6 +98,12 @@ function M.set_root()
         return
     end
 
+    -- Block if save_scope is "view" and there are unsaved changes
+    if opts.save_scope == "view" and has_unsaved_changes(bufnr, state) then
+        vim.notify("sap: save changes before navigating (:w)", vim.log.levels.WARN)
+        return
+    end
+
     -- Use surgical set_root (preserves user edits)
     local ok, err = render.set_root(bufnr, state, entry)
     if not ok then
@@ -112,14 +129,13 @@ function M.refresh()
 end
 
 --- Toggle hidden files visibility
+--- TODO: This does a full re-render, losing any unsaved edits.
+--- Should be made surgical like collapse/expand.
 function M.toggle_hidden()
     local bufnr, _, state, _ = get_context()
     if not state then
         return
     end
-
-    -- Sync before toggling to capture any pending edits
-    buffer.sync(bufnr)
 
     state.show_hidden = not state.show_hidden
     buffer.render(bufnr)
@@ -137,7 +153,7 @@ function M.expand()
         return
     end
 
-    -- Use surgical expand (preserves user edits via hidden_content)
+    -- Use surgical expand (preserves user edits via cached_content)
     local ok, err = render.expand(bufnr, state, entry)
     if not ok then
         vim.notify("sap: " .. (err or "cannot expand"), vim.log.levels.WARN)
@@ -159,7 +175,7 @@ function M.collapse()
         return
     end
 
-    -- Use surgical collapse (stores lines in hidden_content)
+    -- Use surgical collapse (stores lines in cached_content)
     render.collapse(bufnr, state, entry)
 
     -- Cursor stays on same line (the directory)

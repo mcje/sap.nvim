@@ -196,6 +196,41 @@ icons ~
     Icon configuration. If `use_devicons` is true and nvim-web-devicons is
     installed, file-type-specific icons will be used.
 
+                                                             *sap-config-guides*
+guides ~
+    Type: table or false
+    Default: (see below)
+
+    Tree guide line configuration. Shows visual tree structure with
+    connecting lines and expand/collapse indicators. Set `enabled = false`
+    to disable.
+
+    Default: >lua
+        {
+            enabled = true,
+            icons = {
+                expanded = " ",    -- Expanded directory indicator
+                collapsed = " ",   -- Collapsed directory indicator
+                middle = "├── ",    -- Middle child connector
+                last = "└── ",      -- Last child connector
+                pipe = "│   ",      -- Vertical line connector
+                space = "    ",     -- Empty space (no connector)
+            },
+        }
+<
+    Example with ASCII characters: >lua
+        guides = {
+            enabled = true,
+            icons = {
+                expanded = "[-]",
+                collapsed = "[+]",
+                middle = "|-- ",
+                last = "`-- ",
+                pipe = "|   ",
+                space = "    ",
+            },
+        }
+<
                                                                *sap-config-keys*
 keys ~
     Type: table or false
@@ -232,6 +267,9 @@ Sap defines the following highlight groups:
     SapExecutable   String          Executable files
     SapHidden       Comment         Hidden files (dotfiles)
     SapError        DiagnosticError Error indicators
+    SapGuide        Comment         Tree guide lines
+    SapExpanded     Directory       Expanded directory indicator
+    SapCollapsed    Directory       Collapsed directory indicator
 
 Override these in your config: >lua
     vim.api.nvim_set_hl(0, "SapDirectory", { fg = "#5f87af", bold = true })
