@@ -291,36 +291,152 @@ local function format_path(path, ftype)
     return path .. (ftype == "directory" and "/" or "")
 end
 
-local function confirm_changes(changes)
+--- Format changes into display lines with highlight regions
+---@param changes Changes
+---@return string[] lines
+---@return table[] highlights -- { line, col_start, col_end, hl_group }
+local function format_changes(changes)
     local lines = {}
+    local highlights = {}
+
+    local function add_line(label, text, hl_group)
+        local line = "  " .. label .. " " .. text
+        lines[#lines + 1] = line
+        -- Highlight the label portion (after 2 spaces)
+        highlights[#highlights + 1] = {
+            line = #lines,
+            col_start = 2,
+            col_end = 2 + #label,
+            hl_group = hl_group,
+        }
+    end
 
     for _, c in ipairs(changes.creates) do
-        lines[#lines + 1] = "  [CREATE] " .. format_path(c.path, c.type)
+        add_line("[CREATE]", format_path(c.path, c.type), "DiffAdd")
     end
     for _, c in ipairs(changes.copies) do
-        lines[#lines + 1] = "  [COPY] "
-            .. format_path(c.from, c.type)
-            .. " -> "
-            .. format_path(c.to, c.type)
+        local text = format_path(c.from, c.type) .. " -> " .. format_path(c.to, c.type)
+        add_line("[COPY]", text, "DiffChange")
     end
     for _, m in ipairs(changes.moves) do
-        lines[#lines + 1] = "  [MOVE] "
-            .. format_path(m.from, m.type)
-            .. " -> "
-            .. format_path(m.to, m.type)
+        local text = format_path(m.from, m.type) .. " -> " .. format_path(m.to, m.type)
+        add_line("[MOVE]", text, "DiffChange")
     end
     local delete_label = config.options.delete_method == "trash" and "[TRASH]" or "[DELETE]"
+    local delete_hl = config.options.delete_method == "trash" and "DiffChange" or "DiffDelete"
     for _, d in ipairs(changes.deletes) do
-        lines[#lines + 1] = "  " .. delete_label .. " " .. format_path(d.path, d.type)
+        add_line(delete_label, format_path(d.path, d.type), delete_hl)
     end
 
-    if #lines == 0 then
-        return false
-    end
+    return lines, highlights
+end
 
-    local msg = "Apply changes?\n" .. table.concat(lines, "\n")
-    local choice = vim.fn.confirm(msg, "&Yes\n&No", 2)
-    return choice == 1
+--- Show floating window confirmation dialog
+---@param changes Changes
+---@param on_confirm function called when user confirms
+---@param on_cancel function called when user cancels
+local function show_confirm_float(changes, on_confirm, on_cancel)
+    -- Defer to escape BufWriteCmd context (fixes focus issues)
+    vim.schedule(function()
+        local change_lines, highlights = format_changes(changes)
+
+        -- Build content
+        local lines = { "Apply changes?", "" }
+        for _, line in ipairs(change_lines) do
+            lines[#lines + 1] = line
+        end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  [y]es  [n]o"
+
+        -- Calculate dimensions
+        local width = 0
+        for _, line in ipairs(lines) do
+            width = math.max(width, vim.fn.strdisplaywidth(line))
+        end
+        width = math.min(width + 4, math.floor(vim.o.columns * 0.8))
+        local height = #lines
+
+        -- Create buffer
+        local buf = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+        vim.bo[buf].modifiable = false
+        vim.bo[buf].bufhidden = "wipe"
+
+        -- Apply highlights (offset by 2 for header lines)
+        local ns = vim.api.nvim_create_namespace("sap_confirm")
+        for _, hl in ipairs(highlights) do
+            vim.api.nvim_buf_add_highlight(
+                buf,
+                ns,
+                hl.hl_group,
+                hl.line + 1, -- +2 for header, -1 for 0-index = +1
+                hl.col_start,
+                hl.col_end
+            )
+        end
+        -- Highlight the keybinds
+        local last_line = #lines - 1
+        vim.api.nvim_buf_add_highlight(buf, ns, "Special", last_line, 3, 4) -- y
+        vim.api.nvim_buf_add_highlight(buf, ns, "Special", last_line, 10, 11) -- n
+
+        -- Open float
+        local row = math.floor((vim.o.lines - height) / 2)
+        local col = math.floor((vim.o.columns - width) / 2)
+        local win = vim.api.nvim_open_win(buf, true, {
+            relative = "editor",
+            width = width,
+            height = height,
+            row = row,
+            col = col,
+            style = "minimal",
+            border = "rounded",
+            title = " Confirm ",
+            title_pos = "center",
+        })
+
+        -- Hide cursor in float
+        local saved_guicursor = vim.o.guicursor
+        vim.o.guicursor = "a:Cursor/lCursor,a:blinkon0"
+        vim.cmd("hi Cursor blend=100")
+        vim.cmd("hi lCursor blend=100")
+
+        -- Keymaps
+        local closed = false
+        local function close_and_call(callback)
+            return function()
+                if closed then
+                    return
+                end
+                closed = true
+                -- Restore cursor
+                vim.o.guicursor = saved_guicursor
+                vim.cmd("hi Cursor blend=0")
+                vim.cmd("hi lCursor blend=0")
+                if vim.api.nvim_win_is_valid(win) then
+                    vim.api.nvim_win_close(win, true)
+                end
+                if callback then
+                    vim.schedule(callback)
+                end
+            end
+        end
+
+        local opts = { buffer = buf, nowait = true }
+        vim.keymap.set("n", "y", close_and_call(on_confirm), opts)
+        vim.keymap.set("n", "Y", close_and_call(on_confirm), opts)
+        vim.keymap.set("n", "<CR>", close_and_call(on_confirm), opts)
+        vim.keymap.set("n", "n", close_and_call(on_cancel), opts)
+        vim.keymap.set("n", "N", close_and_call(on_cancel), opts)
+        vim.keymap.set("n", "q", close_and_call(on_cancel), opts)
+        vim.keymap.set("n", "<Esc>", close_and_call(on_cancel), opts)
+
+        -- Close on buffer leave
+        vim.api.nvim_create_autocmd("BufLeave", {
+            buffer = buf,
+            once = true,
+            callback = close_and_call(on_cancel),
+        })
+    end)
 end
 
 ---@class ApplyResult
@@ -432,29 +548,29 @@ function M.save(bufnr)
         return
     end
 
-    if not confirm_changes(changes) then
-        return
-    end
+    show_confirm_float(changes, function()
+        -- WARN: Race condition - filesystem may have changed between diff calculation
+        -- and now (user was in confirm dialog). Operations may fail or act on stale state.
+        local result = apply_changes(changes)
 
-    -- WARN: Race condition - filesystem may have changed between diff calculation
-    -- and now (user was in confirm dialog). Operations may fail or act on stale state.
-    local result = apply_changes(changes)
+        -- Report what succeeded
+        for _, msg in ipairs(result.succeeded) do
+            vim.notify("sap: " .. msg, vim.log.levels.INFO)
+        end
 
-    -- Report what succeeded
-    for _, msg in ipairs(result.succeeded) do
-        vim.notify("sap: " .. msg, vim.log.levels.INFO)
-    end
-
-    if result.error then
-        -- Error occurred - report it and don't refresh (buffer still shows remaining changes)
-        vim.notify("sap: " .. result.error, vim.log.levels.ERROR)
-        vim.notify("sap: stopped, buffer shows remaining changes", vim.log.levels.WARN)
-    else
-        -- All succeeded - refresh state and re-render
-        state:refresh()
-        render.render(bufnr, state)
-        M.clear_undo(bufnr)
-    end
+        if result.error then
+            -- Error occurred - report it and don't refresh (buffer still shows remaining changes)
+            vim.notify("sap: " .. result.error, vim.log.levels.ERROR)
+            vim.notify("sap: stopped, buffer shows remaining changes", vim.log.levels.WARN)
+        else
+            -- All succeeded - refresh state and re-render
+            state:refresh()
+            render.render(bufnr, state)
+            M.clear_undo(bufnr)
+        end
+    end, function()
+        -- User cancelled - do nothing
+    end)
 end
 
 ---@param bufnr integer
